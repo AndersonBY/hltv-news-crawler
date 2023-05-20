@@ -2,7 +2,7 @@
 # @Author: Bi Ying
 # @Date:   2023-02-13 14:54:28
 # @Last Modified by:   Bi Ying
-# @Last Modified time: 2023-04-20 21:51:16
+# @Last Modified time: 2023-05-21 03:44:05
 import csv
 import asyncio
 from pathlib import Path
@@ -16,13 +16,16 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
 }
 BATCH_SIZE = 3
-PROXY = "http://127.0.0.1:7890"
+PROXIES = {
+    "http://": "http://127.0.0.1:7890",
+    "https://": "http://127.0.0.1:7890",
+}
 
 
 async def crawl_single_month_articles_urls(url: str):
     print("Crawling", url)
     try_times = 0
-    async with httpx.AsyncClient(proxies=PROXY, http2=True, headers=HEADERS) as client:
+    async with httpx.AsyncClient(proxies=PROXIES, http2=True, headers=HEADERS) as client:
         while try_times < 3:
             try:
                 response = await client.get(url, headers=HEADERS)
@@ -76,12 +79,16 @@ async def crawl_articles_urls(output_file: str = "articles_urls.txt"):
 
 
 async def crawl_single_article(url: str):
+    if not url.startswith("https://www.hltv.org"):
+        url = "https://www.hltv.org" + url
     print("Crawling", url)
     try_times = 0
-    async with httpx.AsyncClient(proxies=PROXY, http2=True, headers=HEADERS) as client:
+    async with httpx.AsyncClient(proxies=PROXIES, http2=True, headers=HEADERS) as client:
         while try_times < 3:
+            content = None
             try:
                 response = await client.get(url)
+                content = response.text
                 soup = BeautifulSoup(response.text, "lxml")
                 title = soup.select_one(".headline").text
                 author = soup.select_one(".article-info .author").text
@@ -96,6 +103,7 @@ async def crawl_single_article(url: str):
                 }
             except Exception as e:
                 print(url, e)
+                print(url, content)
                 try_times += 1
                 await asyncio.sleep(10)
 
@@ -123,11 +131,13 @@ async def crawl_articles_content(
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
-    articles_batches = [
-        articles_urls[i : i + BATCH_SIZE]
-        for i in range(0, len(articles_urls), BATCH_SIZE)
-        if articles_urls[i] not in done_urls
-    ]
+    articles_batches = []
+    for i in range(0, len(articles_urls), BATCH_SIZE):
+        url = articles_urls[i]
+        if not url.startswith("https://www.hltv.org"):
+            url = "https://www.hltv.org" + url
+        if url not in done_urls:
+            articles_batches.append(articles_urls[i : i + BATCH_SIZE])
     print("Batches count:", len(articles_batches))
     for articles_batch in articles_batches:
         tasks = [crawl_single_article(url) for url in articles_batch]
