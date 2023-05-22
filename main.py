@@ -2,8 +2,10 @@
 # @Author: Bi Ying
 # @Date:   2023-05-22 14:32:17
 # @Last Modified by:   Bi Ying
-# @Last Modified time: 2023-05-22 16:52:46
+# @Last Modified time: 2023-05-22 17:39:33
 import re
+import shutil
+import zipfile
 import asyncio
 from pathlib import Path
 from datetime import datetime
@@ -16,7 +18,7 @@ from bs4 import BeautifulSoup
 # Better to set a cookie to avoid being blocked
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-    "Cookie": "",
+    # "Cookie": "",
 }
 BATCH_SIZE = 3
 SLEEP_INTERVAL = 3
@@ -153,7 +155,6 @@ async def crawl_articles_content(
         results = await asyncio.gather(*tasks)
 
         new_df = pd.DataFrame([result for result in results if result is not None])
-        print(new_df)
         if not new_df.empty:
             df = pd.concat([df, new_df], ignore_index=True)
         else:
@@ -165,9 +166,38 @@ async def crawl_articles_content(
     df.to_csv(output_file, index=False)
 
 
+def write_articles_to_file(data_file: str = "articles_data.csv", output_folder: str = "./"):
+    temp_articles_folder = Path(output_folder) / "temp_articles"
+    if not temp_articles_folder.exists():
+        temp_articles_folder.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_csv(data_file, parse_dates=["datetime"])
+
+    for _, row in df.iterrows():
+        title = re.sub(r"[^\w\-_\. ]", "_", row["title"])
+        datetime = row["datetime"].strftime("%Y-%m-%d-%H-%M-%S")
+        file_name = f"{datetime}_{title}.txt"
+        file_path = temp_articles_folder / file_name
+        with open(file_path, "w") as f:
+            f.write(f"# {row['title']}")
+            f.write("\n\n")
+            f.write(f"Author: {row['author']}")
+            f.write("\n\n")
+            f.write(f"Datetime: {row['datetime']}")
+            f.write("\n\n")
+            f.write(str(row["content"]).strip())
+
+    with zipfile.ZipFile(Path(output_folder) / "articles.zip", "w", zipfile.ZIP_DEFLATED) as zipf:
+        for file in temp_articles_folder.iterdir():
+            zipf.write(file, file.name)
+
+    shutil.rmtree(temp_articles_folder)
+
+
 async def main():
     await crawl_articles_urls()
     await crawl_articles_content()
 
 
 asyncio.run(main())
+write_articles_to_file()
