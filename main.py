@@ -1,25 +1,34 @@
 # -*- coding: utf-8 -*-
 # @Author: Bi Ying
-# @Date:   2023-02-13 14:54:28
+# @Date:   2023-05-22 14:32:17
 # @Last Modified by:   Bi Ying
-# @Last Modified time: 2023-05-21 03:44:05
-import csv
+# @Last Modified time: 2023-05-22 16:52:46
+import re
 import asyncio
 from pathlib import Path
 from datetime import datetime
 
 import httpx
+import pandas as pd
 from bs4 import BeautifulSoup
 
 
+# Better to set a cookie to avoid being blocked
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+    "Cookie": "",
 }
 BATCH_SIZE = 3
+SLEEP_INTERVAL = 3
+ERROR_SLEEP_INTERVAL = 10
 PROXIES = {
     "http://": "http://127.0.0.1:7890",
     "https://": "http://127.0.0.1:7890",
 }
+START_YEAR = 2005
+
+index_extractor = re.compile(r"news/(\d+)")
+columns = ["index", "url", "title", "author", "timestamp", "content", "datetime"]
 
 
 async def crawl_single_month_articles_urls(url: str):
@@ -35,13 +44,13 @@ async def crawl_single_month_articles_urls(url: str):
             except Exception as e:
                 print(f"Error: {e} {url}")
                 try_times += 1
-                await asyncio.sleep(10)
+                await asyncio.sleep(ERROR_SLEEP_INTERVAL)
     return []
 
 
 async def crawl_articles_urls(output_file: str = "articles_urls.txt"):
     current_year = datetime.now().year
-    years = list(range(2005, current_year + 1))
+    years = list(range(START_YEAR, current_year + 1))
     months = [
         "january",
         "february",
@@ -70,7 +79,7 @@ async def crawl_articles_urls(output_file: str = "articles_urls.txt"):
         results = await asyncio.gather(*tasks)
         for result in results:
             articles_urls.extend(result)
-        await asyncio.sleep(1)
+        await asyncio.sleep(SLEEP_INTERVAL)
 
     print("Articles count:", len(articles_urls))
 
@@ -95,17 +104,19 @@ async def crawl_single_article(url: str):
                 timestamp = soup.select_one(".article-info .date")["data-unix"]
                 content = soup.select_one(".newsdsl").text
                 return {
+                    "index": index_extractor.search(url).group(1),
                     "url": url,
                     "title": title,
                     "author": author,
                     "timestamp": timestamp,
-                    "content": content,
+                    "datetime": datetime.fromtimestamp(int(timestamp) // 1000),
+                    "content": content.strip(),
                 }
             except Exception as e:
                 print(url, e)
-                print(url, content)
+                print(f"{url} content: {content}")
                 try_times += 1
-                await asyncio.sleep(10)
+                await asyncio.sleep(ERROR_SLEEP_INTERVAL)
 
 
 async def crawl_articles_content(
@@ -116,42 +127,42 @@ async def crawl_articles_content(
         articles_urls = f.read().splitlines()
 
     if Path(output_file).exists():
-        need_write_header = False
-        with open(output_file, newline="", encoding="utf8") as csvfile:
-            reader = csv.DictReader(csvfile)
-            done_urls = [row["url"] for row in reader]
+        df = pd.read_csv(output_file)
+        done_urls = df["url"].tolist()
     else:
-        need_write_header = True
+        df = pd.DataFrame(columns=columns)
         done_urls = []
-    print(done_urls)
-
-    if need_write_header:
-        with open(output_file, "a", newline="", encoding="utf8") as csvfile:
-            fieldnames = ["url", "title", "author", "timestamp", "content"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
 
     articles_batches = []
-    for i in range(0, len(articles_urls), BATCH_SIZE):
-        url = articles_urls[i]
+    batch_index = 0
+    current_batch = []
+    for url in articles_urls:
         if not url.startswith("https://www.hltv.org"):
             url = "https://www.hltv.org" + url
         if url not in done_urls:
-            articles_batches.append(articles_urls[i : i + BATCH_SIZE])
+            print("Adding", url, "to batch. Batch index:", batch_index)
+            current_batch.append(url)
+            if len(current_batch) == BATCH_SIZE:
+                articles_batches.append(current_batch)
+                current_batch = []
+                batch_index += 1
+
     print("Batches count:", len(articles_batches))
     for articles_batch in articles_batches:
         tasks = [crawl_single_article(url) for url in articles_batch]
         results = await asyncio.gather(*tasks)
 
-        with open(output_file, "a", newline="", encoding="utf8") as csvfile:
-            fieldnames = ["url", "title", "author", "timestamp", "content"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            for result in results:
-                if result is not None:
-                    writer.writerow(result)
-                else:
-                    print("None data:", articles_batch)
-        await asyncio.sleep(4)
+        new_df = pd.DataFrame([result for result in results if result is not None])
+        print(new_df)
+        if not new_df.empty:
+            df = pd.concat([df, new_df], ignore_index=True)
+        else:
+            print("None data:", articles_batch)
+        await asyncio.sleep(SLEEP_INTERVAL)
+
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.sort_values(by=["datetime"])
+    df.to_csv(output_file, index=False)
 
 
 async def main():
